@@ -1,0 +1,206 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka-init
+    depends_on:
+      - kafka
+    volumes:
+      - ./kafka-init/create-kafka-topics.sh:/create-kafka-topics.sh:ro
+    entrypoint: ["/bin/bash", "-lc"]
+    command: /create-kafka-topics.sh
+
+  backend-api:
+    build:
+      context: .
+      dockerfile: backend-api/Dockerfile
+    container_name: backend-api
+    depends_on:
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      AdminAuth__ApiKey: ${ADMIN_API_KEY:-dev-admin-api-key}
+      Facebook__AppId: ${FACEBOOK_APP_ID}
+      Facebook__AppSecret: ${FACEBOOK_APP_SECRET}
+      Facebook__VerifyToken: ${FACEBOOK_VERIFY_TOKEN}
+      Facebook__PageId: ${FACEBOOK_PAGE_ID}
+      Facebook__PageAccessToken: ${FACEBOOK_PAGE_ACCESS_TOKEN}
+      Facebook__GraphApiVersion: ${FACEBOOK_GRAPH_API_VERSION:-v22.0}
+      Facebook__SubscribedFields: ${FACEBOOK_SUBSCRIBED_FIELDS:-feed,messages}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-backend-api-group}
+      KAFKA_REPLY_COMMANDS_TOPIC: ${KAFKA_REPLY_COMMANDS_TOPIC:-reply_commands}
+      KAFKA_SEND_RETRY_TOPIC: ${KAFKA_SEND_RETRY_TOPIC:-send_retry}
+      KAFKA_SEND_FAILED_TOPIC: ${KAFKA_SEND_FAILED_TOPIC:-send_failed}
+      ConnectionStrings__BackendDatabase: ${BACKEND_DB_CONNECTION:-Data Source=backend.db}
+
+  webhook-service:
+    build:
+      context: .
+      dockerfile: webhook-service/Dockerfile
+    container_name: webhook-service
+    depends_on:
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "3001:3001"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Facebook__AppId: ${FACEBOOK_APP_ID}
+      Facebook__AppSecret: ${FACEBOOK_APP_SECRET}
+      Facebook__VerifyToken: ${FACEBOOK_VERIFY_TOKEN}
+      Facebook__PageId: ${FACEBOOK_PAGE_ID}
+      Facebook__PageAccessToken: ${FACEBOOK_PAGE_ACCESS_TOKEN}
+      Facebook__GraphApiVersion: ${FACEBOOK_GRAPH_API_VERSION:-v22.0}
+      Facebook__SubscribedFields: ${FACEBOOK_SUBSCRIBED_FIELDS:-feed,messages}
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__Topic: ${KAFKA_TOPIC:-raw_events}
+
+  core-service:
+    build:
+      context: .
+      dockerfile: core-service/Dockerfile
+    container_name: core-service
+    depends_on:
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "3002:3002"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_HTTP_PORTS: 3002
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-raw_events}
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-core-service-group}
+      KAFKA_REPLY_COMMANDS_TOPIC: ${KAFKA_REPLY_COMMANDS_TOPIC:-reply_commands}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-dead_letter}
+      OpenAI__ApiKey: ${OPENAI_API_KEY}
+      OpenAI__Model: ${OPENAI_MODEL:-gpt-4o-mini}
+      OpenAI__BaseUrl: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OpenAI__MaxAttempts: ${OPENAI_MAX_ATTEMPTS:-2}
+      Moderation__RepeatSpamThreshold: ${MODERATION_REPEAT_SPAM_THRESHOLD:-3}
+      Moderation__RepeatWindowHours: ${MODERATION_REPEAT_WINDOW_HOURS:-24}
+
+  retry-service:
+    build:
+      context: .
+      dockerfile: retry-service/Dockerfile
+    container_name: retry-service
+    depends_on:
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "3003:3003"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:3003
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-retry-service-group}
+      KAFKA_SEND_FAILED_TOPIC: ${KAFKA_SEND_FAILED_TOPIC:-send_failed}
+      KAFKA_SEND_RETRY_TOPIC: ${KAFKA_SEND_RETRY_TOPIC:-send_retry}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-dead_letter}
+      KAFKA_MAX_RETRIES: ${KAFKA_MAX_RETRIES:-5}
+
+  # Kafka exporter for Prometheus
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    depends_on:
+      - kafka
+    ports:
+      - "9308:9308"
+    command:
+      - "--kafka.server=kafka:9092"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    depends_on:
+      - kafka-exporter
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    depends_on:
+      - prometheus
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  # SQL Server for development/testing 
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: fb_api-mssql
+    environment:
+      SA_PASSWORD: "123456789"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Express"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+
+volumes:
+  mssql_data:
+  prometheus_data:

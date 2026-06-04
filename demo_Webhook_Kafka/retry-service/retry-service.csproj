@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>retry_service</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" Version="2.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Contracts\KafkaMessages.cs" Link="Contracts\KafkaMessages.cs" />
+  </ItemGroup>
+
+</Project>
